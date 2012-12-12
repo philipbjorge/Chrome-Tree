@@ -1,0 +1,19 @@
+{
+  "name": "Chrome Tree",
+  "version": "12.11.2012",
+  "manifest_version": 2,
+  "description": "Replaces the Chrome back/forward stack with a tree ala Vim or Emacs.",
+  "browser_action": {
+    "default_icon": "icon.png",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "permissions": [
+    "tabs",
+    "webNavigation",
+    "history",
+    "chrome://favicon/"
+  ]
+}
