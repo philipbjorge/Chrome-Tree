@@ -2,7 +2,9 @@ function l(s) {
     console.log(s);
 }
 
-function hash(s) {
+// The Hash function - taken from
+// http://werxltd.com/wp/2010/05/13/javascript-implementation-of-javas-string-hashcode-method/
+this.hash = function(s) {
     var hash = 0;
     if (s.length == 0) return hash;
     for (i = 0; i < s.length; i++) {
@@ -13,109 +15,177 @@ function hash(s) {
     return hash;
 }
 
-//
-// Tree Operations
-// theTree contains our nested undo/redo tree
-// theTabId keeps track of which tabId (or root id) we should display
-// whichNodeKey is a map from theTabId to the currently selected node
-//
-theTree = {};
-whichNodeKey = {}; // a map from tabId to currentNodeKey
-theTabId = "";
-ignoreStateChange = ""; // Used when we want to ignore a URL (temporarily)
+function TheTree() {
+    // tabs stores each tree and it's status
+    // tabsActive stores the currently active path for each tab in tabs, keyed with the same value (_tabid)
+    // tab stores which tab in tabs
+    // urlInfo stores URL information in a centralized location to speed up async url updates
+    // ignoreUrlOnce stores an ignore URL for each tab - used when traversing up a tree to prevent graphs/duplicate trees
+    this.tabs = {};
+    this.tabsActive = {};
+    this.tab = "";
+    this.urlInfo = {};
+    this.ignoreUrlOnce = {};
 
-function node(title, url, id, children) {
-    var node = {title: title, url: url, key: id, children: children, icon: null};
-    return node;
-}
-//
-// End Tree Operations
-//
+    this.hashUrl = function(u) {
+        return hash(u.replace(/.*?:\/\//g, ""));
+    };
 
-//
-// UI Operations
-//
-function getTree() {
-    var tree = theTree[theTabId] || [];
-    function traverse_and_mark(o) {
-        // Mark as selected so our UI tree opens to this node
-        o["select"] = false;
-        o["focus"] = false;
-        if (o["key"] === whichNodeKey[theTabId]) {
-            o["select"] = true;
-            o["focus"] = true;
+    // Adds a tab entry to this.tabs if one doesn't exist for this tab id
+    this.addTab = function(id, title, url) {
+        var tid = "_" + id;
+        if (this.tabs[tid] === undefined) {
+            var h = this.hashUrl(url);
+            this.tabs[tid] = {key: h, children: []};
+            this.urlInfo[h] = {title: title, url: url, icon: null};
+            this.tabsActive[tid] = "";
+            this.setTab(id);
+            l("tab added to tree at id: " + id);
+        } else { l("tab not added to tree at id: " + id); }
+    };
+
+    this.goTo = function(new_path, url) {
+        this.tabsActive[this.tab] = new_path;
+        this.ignoreUrlOnce[this.tab] = url;
+    };
+
+    // Replaces the tree's old id with a new id
+    this.setTabId = function(o, n) {
+        var old_id = "_" + o;
+        var new_id = "_" + n;
+
+        this.tabs[new_id] = this.tabs[old_id];
+        this.tabsActive[new_id] = this.tabsActive[old_id];
+
+        delete this.tabs[old_id];
+        delete this.tabsActive[old_id];
+
+        l("setTabId (old, new): " + old_id + ", " + new_id);
+    };
+
+    this.markDelete = function(id) {
+        // Mark these tabs for deletion and then do periodic sweeps for removal
+        // This will allow restoration on tab close.
+        // However, they do trigger the reload transition so something may be possible.
+        var id = "_" + id;
+        delete this.tabs[id];
+        delete this.tabsActive[id];
+        l("tab deleted from tree at id: " + id);
+    };
+
+    // Set the current tab's history to show in the UI
+    this.setTab = function(id) {
+        this.tab = "_" + id;
+        l("setTab: " + this.tab);
+    };
+
+
+    // Updates a url with it's title and icon
+    this.updateNode = function(url, title, icon) {
+        var h = this.hashUrl(url);
+        var n = this.urlInfo[h] || {};
+        n["url"] = url;
+        n["title"] = title;
+        n["icon"] = icon;
+        this.urlInfo[h] = n;
+        l("updateNode with url: " + url);
+    };
+
+    this.addNode = function(id, url, title) {
+        var tab_id = "_" + id;
+        if (url !== this.ignoreUrlOnce[tab_id]) {
+            // Add the node
+            // By traversing the path until we get to the parent
+            var path = this.tabsActive[tab_id] || "";
+            var node = this.tabs[tab_id];
+            for (var i = 0; i < path.length; i++) {
+                node = node.children[parseInt(path[i])];
+            }
+
+            // Update tabsActive, tabs, and urlInfo
+            var h = this.hashUrl(url);
+
+            // Don't add if we already have the url in this set of children
+            var alreadyInChildren = false;
+            for (var i = 0; i < node.children.length; i++) {
+                if (node.children[i].key === h)
+                    alreadyInChildren = true;
+            }
+            if (!alreadyInChildren)
+                this.tabsActive[tab_id] += node.children.push({key: h, children: []}) - 1;
+
+            this.urlInfo[h] = this.urlInfo[h] || {url: url, title: title || url, icon: ""};
         }
+        this.ignoreUrlOnce[tab_id] = "";
+        l("added " + url + " to history for tab id: " + tab_id);
+    };
 
-        var children = o["children"] || [];
-        for (e in children) {
-            var e = children[e];
-            traverse_and_mark(e);
+    // Return the active node's key for the current tab
+    // path + url
+    this.getActiveKey = function() {
+        var path = this.tabsActive[this.tab] || "";
+        var node = this.tabs[this.tab];
+        for (var i = 0; i < path.length; i++) {
+            node = node.children[parseInt(path[i])];
         }
-    }
-    // Mark the active tree state as selected for the UI
-    for (e in tree) {
-        var e = tree[e];
-        traverse_and_mark(e);
-    }
-    return tree;
+        return path + node.key;
+    };
+
+    this.renderMe = function() {
+        // Deep copy of the tree
+        var tree = JSON.parse(JSON.stringify(this.tabs[this.tab])) || [];
+
+        function populate(t, o, fp) {
+            var d = t.urlInfo[o.key];
+            // ukey for the url key, key for the unique path + url key
+            o.ukey = o.key;
+            o.key = fp + o.key;
+            o.url = d.url;
+            o.title = d.title;
+            o.icon = d.icon;
+            o.fullpath = fp;
+            for (var i = 0; i < o.children.length; i++) {
+                populate(t, o.children[i], fp + i);
+            }
+        };
+
+        populate(this, tree, "");
+
+        return tree;
+    };
 }
+
+var theTree = new TheTree();
+
+// ///////////////////////////////////////////////////////////////////
 //
-// End UI Operations
+// Chrome Event Handlers
 //
+// ///////////////////////////////////////////////////////////////////
 
 // Tab onCreated
 // Create a new root node in our theTree
 chrome.tabs.onCreated.addListener(function(tab) {
-    // Check here to make sure we aren't clobbering if onTabReplaced got called first
-    var id = "_" + tab.id;
-    if (theTree[id] === undefined) {
-        // 0 is the node level
-        var key = hash(tab.url.replace(/.*?:\/\//g, "")); // replace removes protocols - prevents different hashes for similar urls like https vs http
-        theTree[id] = [node(tab.title, tab.url, key)];
-        theTabId = id;
-        whichNodeKey[id] = id;
-
-        l("tab added to tree at id: " + id);
-    }
+    theTree.addTab(tab.id, tab.title, tab.url);
 });
 
 // Tab onRemoved
 // Remove the node from theTree
-// In the future, it'd be nice to be able to restore a tab's undo/redo state
-// Unfortunately restored tabs get new tab ids.
-// However, they do trigger the reload transition so something may be possible.
 chrome.tabs.onRemoved.addListener(function(tab_id) {
-    // TODO: Handle restoration of state
-    var id = "_" + tab_id;
-    delete theTree[id];
-    delete whichNodeKey[id];
-
-    l("tab deleted from tree at id: " + id);
+    theTree.markDelete(tab_id);
 });
 
 // Tab onActivated
 // Switch our node pointer to indicate which tree needs to be shown in the UI
 chrome.tabs.onActivated.addListener(function(info) {
-    var id = "_" + info.tabId;
-    theTabId = id;
-
-    l("activated: " + info.tabId);
+    theTree.setTab(info.tabId);
 });
 
 // webNavigation onTabReplaced
 // Used to handle the case when a user is using Chrome's advanced
 // prerendering feature
 chrome.webNavigation.onTabReplaced.addListener(function(details) {
-    var old_id = "_" + details.replacedTabId;
-    var new_id = "_" + details.tabId;
-
-    theTree[new_id] = theTree[old_id];
-    delete theTree[old_id];    
-
-    whichNodeKey[new_id] = whichNodeKey[old_id];
-    delete whichNodeKey[old_id];
-
-    l("replaced (old, new): " + details.replacedTabId + ", " + details.tabId);
+    theTree.setTabId(details.replacedTabId, details.tabId);
 });
 
 // tab onUpdated
@@ -123,78 +193,19 @@ chrome.webNavigation.onTabReplaced.addListener(function(details) {
 chrome.tabs.onUpdated.addListener(function(tabId, changeInfo, tab) {
     // Only bother on complete, otherwise we don't have a page title
     if (changeInfo.status === "complete") {
-        function updateTabTitle() {
-            function traverse_and_update_titles(o) {
-                // Update the title if we have a matching URL
-                if (o["url"] === tab.url) {
-                    o["title"] = tab.title;
-                    o["icon"] = tab.favIconUrl;
-                }
-
-                var children = o["children"] || [];
-                for (e in children) {
-                    var e = children[e];
-                    traverse_and_update_titles(e);
-                }
-            }
-
-            var tree = theTree[theTabId] || [];
-            for (e in tree) {
-                var e = tree[e];
-                traverse_and_update_titles(e);
-            }
-        }
-
         // Update the tab title
-        updateTabTitle();
         // Try once more in 250ms to handle pages like Google Instant that update the title after load
-        setTimeout(updateTabTitle, 250);
+        theTree.updateNode(tab.url, tab.title, tab.favIconUrl);
+        setTimeout(function(){ theTree.updateNode(tab.url, tab.title, tab.favIconUrl); }, 250);
     }
 });
 
 chrome.history.onVisited.addListener(function(result) {
-    function traverse_and_add_child(o, child) {
-        // Mark as selected so our UI tree opens to this node
-        if (o["key"] === whichNodeKey[theTabId] && o["key"] !== child["key"]) {
-            // Adds a child only if this state doesn't exist in our tree already
-            for (e in o["children"]) {
-                var e = o["children"][e];
-                if (e["key"] === child["key"]) {
-                    return;
-                }
-            }
-
-            // Add the child node
-            if (o["children"] === undefined || o["children"] === null) {
-                o["children"] = [];
-            }
-            o["children"].push(child);
-
-            return;
+    // Find out which tab(s) have this result as their current page
+    // Then add to their parent
+    chrome.tabs.query({url: result.url}, function(tabs) {
+        for (var i = 0; i < tabs.length; i++) {
+            theTree.addNode(tabs[i].id, result.url, result.title);
         }
-
-        var children = o["children"] || [];
-        for (e in children) {
-            var e = children[e];
-            traverse_and_add_child(e, child);
-        }
-    }
-
-    if (result.url !== ignoreStateChange) {
-        // Unique key based on the url and parent
-        var tree = theTree[theTabId] || [];
-
-        // TODO: Add something to the hash to indicate it's position in the tree
-        var newNodeKey = hash(result.url.replace(/.*?:\/\//g, "")); // replace removes protocols - prevents different hashes for similar urls like https vs http
-
-        // Add the child node and update our selected node
-        for (e in tree) {
-            var e = tree[e];
-            traverse_and_add_child(e, node(result.title || result.url, result.url, newNodeKey, null));
-        }
-        whichNodeKey[theTabId] = newNodeKey;
-    }
-    ignoreStateChange = "";
-
-    l("added to history");
+    });
 });

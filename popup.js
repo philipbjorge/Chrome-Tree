@@ -6,17 +6,17 @@ $(function(){
     var tree = $("#tree").dynatree({
         onActivate: function(node) {
             var bg = chrome.extension.getBackgroundPage();
-            bg.whichNodeKey[bg.theTabId] = node.data.key;
-            chrome.tabs.update(parseInt(bg.theTabId.slice(1)), {url: node.data.url});
+            // Update theTree's current path and ignore this state change
+            bg.theTree.goTo(node.data.fullpath, node.data.url);
+            chrome.tabs.update(parseInt(bg.theTree.tab.slice(1)), {url: node.data.url});
         },
         onPostInit: function() {
             // Show and focus selected node no matter what depth
             var bg = chrome.extension.getBackgroundPage();
-            var k = bg.whichNodeKey[bg.theTabId];
-            var n = this.getNodeByKey(k);
+            var n = this.getNodeByKey(bg.theTree.getActiveKey());
             n.activateSilently();
         },
-        children: chrome.extension.getBackgroundPage().getTree(),
+        children: chrome.extension.getBackgroundPage().theTree.renderMe(),
         clickFolderMode: 1,
         selectMode: 1,
         debugLevel: 0
